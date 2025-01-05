@@ -34,6 +34,9 @@ func calculateNextMove(gameState GameState) string {
 	myHealth := gameState.You.Health
 	myLength := gameState.You.Length
 
+	// Calculate opponent predictions with more advanced analysis
+	predictions := newOpponentPredictor(gameState).getPredictions()
+
 	// Calculate scores for each possible move
 	for _, direction := range possibleMoves {
 		nextPos := getNextPosition(myHead, direction)
@@ -43,16 +46,43 @@ func calculateNextMove(gameState GameState) string {
 			continue
 		}
 
+		// Check for potential head-to-head collisions using advanced prediction
+		collisionRisk := calculateCollisionRisk(nextPos, predictions, myLength, gameState)
+		if collisionRisk >= 0.8 { // High risk threshold
+			continue
+		}
+
 		score := evaluateMove(nextPos, gameState, myHealth, myLength)
+
+		// Adjust score based on collision risk
+		score *= (1.0 - collisionRisk)
+
 		validMoves = append(validMoves, Move{Direction: direction, Score: score})
 	}
 
-	// If no valid moves, return any direction (snake will die anyway)
+	// If no valid moves, try to accept moves with higher risk (better than guaranteed death)
+	if len(validMoves) == 0 {
+		for _, direction := range possibleMoves {
+			nextPos := getNextPosition(myHead, direction)
+			if !isValidMove(nextPos, gameState) {
+				continue
+			}
+
+			collisionRisk := calculateCollisionRisk(nextPos, predictions, myLength, gameState)
+			score := evaluateMove(nextPos, gameState, myHealth, myLength)
+
+			// Apply risk-based penalty
+			score *= (1.0 - collisionRisk)
+			score -= 200 // Additional penalty for high-risk moves
+
+			validMoves = append(validMoves, Move{Direction: direction, Score: score})
+		}
+	}
+
 	if len(validMoves) == 0 {
 		return "up"
 	}
 
-	// Return the move with the highest score
 	bestMove := validMoves[0]
 	for _, move := range validMoves {
 		if move.Score > bestMove.Score {
@@ -61,6 +91,197 @@ func calculateNextMove(gameState GameState) string {
 	}
 
 	return bestMove.Direction
+}
+
+// OpponentPredictor provides advanced opponent movement prediction
+type OpponentPredictor struct {
+	gameState GameState
+	cache     map[string]PredictionData
+}
+
+type PredictionData struct {
+	LikelyMoves     []Coordinate
+	MoveProbability map[Coordinate]float64
+	Intent          MovementIntent
+}
+
+type MovementIntent struct {
+	SeekingFood    bool
+	AggressiveMode bool
+	Trapped        bool
+}
+
+func newOpponentPredictor(state GameState) *OpponentPredictor {
+	return &OpponentPredictor{
+		gameState: state,
+		cache:     make(map[string]PredictionData),
+	}
+}
+
+func (op *OpponentPredictor) getPredictions() map[string]PredictionData {
+	for _, snake := range op.gameState.Board.Snakes {
+		if snake.ID == op.gameState.You.ID {
+			continue
+		}
+
+		if _, exists := op.cache[snake.ID]; !exists {
+			op.cache[snake.ID] = op.analyzeSnake(snake)
+		}
+	}
+	return op.cache
+}
+
+func (op *OpponentPredictor) analyzeSnake(snake Snake) PredictionData {
+	data := PredictionData{
+		MoveProbability: make(map[Coordinate]float64),
+	}
+
+	// Determine snake's intent
+	intent := op.determineIntent(snake)
+	data.Intent = intent
+
+	// Get all possible moves
+	directions := []string{"up", "down", "left", "right"}
+	totalWeight := 0.0
+
+	for _, dir := range directions {
+		nextPos := getNextPosition(snake.Head, dir)
+		if !isValidMove(nextPos, op.gameState) {
+			continue
+		}
+
+		weight := op.calculateMoveWeight(nextPos, snake, intent)
+		if weight > 0 {
+			data.LikelyMoves = append(data.LikelyMoves, nextPos)
+			data.MoveProbability[nextPos] = weight
+			totalWeight += weight
+		}
+	}
+
+	// Normalize probabilities
+	if totalWeight > 0 {
+		for pos := range data.MoveProbability {
+			data.MoveProbability[pos] /= totalWeight
+		}
+	}
+
+	return data
+}
+
+func (op *OpponentPredictor) determineIntent(snake Snake) MovementIntent {
+	intent := MovementIntent{}
+
+	// Check if snake is seeking food
+	if snake.Health < 30 {
+		intent.SeekingFood = true
+	}
+
+	// Check if snake is in aggressive mode
+	for _, otherSnake := range op.gameState.Board.Snakes {
+		if otherSnake.ID == snake.ID {
+			continue
+		}
+		headDist := manhattanDistance(snake.Head, otherSnake.Head)
+		if headDist <= 2 && snake.Length > otherSnake.Length {
+			intent.AggressiveMode = true
+			break
+		}
+	}
+
+	// Check if snake is trapped
+	availableMoves := 0
+	for _, dir := range []string{"up", "down", "left", "right"} {
+		nextPos := getNextPosition(snake.Head, dir)
+		if isValidMove(nextPos, op.gameState) {
+			availableMoves++
+		}
+	}
+	intent.Trapped = availableMoves <= 2
+
+	return intent
+}
+
+func (op *OpponentPredictor) calculateMoveWeight(pos Coordinate, snake Snake, intent MovementIntent) float64 {
+	weight := 1.0
+
+	// Adjust weight based on food proximity if snake is seeking food
+	if intent.SeekingFood {
+		minFoodDist := math.MaxFloat64
+		for _, food := range op.gameState.Board.Food {
+			dist := float64(manhattanDistance(pos, food))
+			if dist < minFoodDist {
+				minFoodDist = dist
+			}
+		}
+		weight *= (10.0 / (minFoodDist + 1.0))
+	}
+
+	// Adjust weight based on aggressive behavior
+	if intent.AggressiveMode {
+		for _, otherSnake := range op.gameState.Board.Snakes {
+			if otherSnake.ID == snake.ID || otherSnake.ID == op.gameState.You.ID {
+				continue
+			}
+			if snake.Length > otherSnake.Length {
+				headDist := float64(manhattanDistance(pos, otherSnake.Head))
+				weight *= (5.0 / (headDist + 1.0))
+			}
+		}
+	}
+
+	// Reduce weight for moves that could trap the snake
+	if intent.Trapped {
+		availableNextMoves := 0
+		for _, dir := range []string{"up", "down", "left", "right"} {
+			nextPos := getNextPosition(pos, dir)
+			if isValidMove(nextPos, op.gameState) {
+				availableNextMoves++
+			}
+		}
+		weight *= float64(availableNextMoves) / 4.0
+	}
+
+	return weight
+}
+
+func calculateCollisionRisk(nextPos Coordinate, predictions map[string]PredictionData, myLength int, state GameState) float64 {
+	maxRisk := 0.0
+
+	for _, snake := range state.Board.Snakes {
+		if snake.ID == state.You.ID {
+			continue
+		}
+
+		prediction := predictions[snake.ID]
+
+		// Calculate collision risk based on move probabilities
+		for possiblePos, probability := range prediction.MoveProbability {
+			if nextPos.X == possiblePos.X && nextPos.Y == possiblePos.Y {
+				risk := probability
+
+				// Adjust risk based on snake lengths
+				if snake.Length >= myLength {
+					risk *= 1.5 // Increase risk for longer or equal length snakes
+				} else {
+					risk *= 0.5 // Decrease risk for shorter snakes
+				}
+
+				// Adjust risk based on snake's intent
+				if prediction.Intent.AggressiveMode {
+					risk *= 1.3 // Increase risk if snake is in aggressive mode
+				}
+				if prediction.Intent.Trapped {
+					risk *= 0.7 // Decrease risk if snake is trapped
+				}
+
+				if risk > maxRisk {
+					maxRisk = risk
+				}
+			}
+		}
+	}
+
+	return maxRisk
 }
 
 // getNextPosition calculates the next position based on current position and direction
@@ -95,56 +316,6 @@ func isValidMove(pos Coordinate, state GameState) bool {
 	}
 
 	return true
-}
-
-// evaluateMove scores a potential move based on various factors
-func evaluateMove(pos Coordinate, state GameState, myHealth int, myLength int) float64 {
-	score := 100.0
-
-	// Avoid hazards
-	for _, hazard := range state.Board.Hazards {
-		if pos.X == hazard.X && pos.Y == hazard.Y {
-			score -= 50
-		}
-	}
-
-	// Food evaluation
-	for _, food := range state.Board.Food {
-		dist := manhattanDistance(pos, food)
-		if myHealth < 25 {
-			// Actively seek food when health is low
-			score += 50.0 / float64(dist)
-		} else {
-			// Slightly avoid food when health is good
-			score -= 10.0 / float64(dist)
-		}
-	}
-
-	// Evaluate opponent positions
-	for _, snake := range state.Board.Snakes {
-		if snake.ID == state.You.ID {
-			continue
-		}
-
-		// Distance to opponent's head
-		headDist := manhattanDistance(pos, snake.Head)
-
-		if headDist == 1 {
-			if myLength > snake.Length {
-				// Aggressive behavior when we're longer
-				score += 100
-			} else {
-				// Avoid head-to-head with longer or equal length snakes
-				score -= 100
-			}
-		}
-	}
-
-	// Evaluate dead ends
-	deadEndPenalty := evaluateDeadEnd(pos, state, 4)
-	score -= float64(deadEndPenalty)
-
-	return score
 }
 
 // manhattanDistance calculates the Manhattan distance between two points
