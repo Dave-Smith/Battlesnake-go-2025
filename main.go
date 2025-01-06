@@ -299,25 +299,6 @@ func getNextPosition(current Coordinate, direction string) Coordinate {
 	return current
 }
 
-// isValidMove checks if the move is valid (within bounds and not colliding)
-func isValidMove(pos Coordinate, state GameState) bool {
-	// Check board boundaries
-	if pos.X < 0 || pos.X >= state.Board.Width || pos.Y < 0 || pos.Y >= state.Board.Height {
-		return false
-	}
-
-	// Check collision with all snake bodies
-	for _, snake := range state.Board.Snakes {
-		for _, segment := range snake.Body {
-			if pos.X == segment.X && pos.Y == segment.Y {
-				return false
-			}
-		}
-	}
-
-	return true
-}
-
 // manhattanDistance calculates the Manhattan distance between two points
 func manhattanDistance(a, b Coordinate) int {
 	return int(math.Abs(float64(a.X-b.X)) + math.Abs(float64(a.Y-b.Y)))
