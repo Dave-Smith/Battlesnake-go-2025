@@ -12,6 +12,22 @@ type SnakeStartFunc func(state GameState)
 type SnakeInfoFunc func() BattlesnakeInfoResponse
 type SnakeEndFunc func(state GameState)
 
+// Start Battlesnake Server
+func RunServer() {
+	port := os.Getenv("PORT")
+	if len(port) == 0 {
+		port = "8080"
+	}
+
+	http.HandleFunc("/claudia/", withServerID(HandleIndex))
+	http.HandleFunc("/claudia/start", withServerID(HandleStart))
+	http.HandleFunc("/claudia/move", withServerID(HandleMove))
+	http.HandleFunc("/claudia/end", withServerID(HandleEnd))
+
+	log.Printf("Running Battlesnake at http://0.0.0.0:%s...\n", port)
+	log.Fatal(http.ListenAndServe(":"+port, nil))
+}
+
 func HandleStart(w http.ResponseWriter, r *http.Request) {
 	state := GameState{}
 	err := json.NewDecoder(r.Body).Decode(&state)
@@ -174,20 +190,4 @@ func unmarshalState(r *http.Request) (GameState, error) {
 		return GameState{}, err
 	}
 	return state, nil
-}
-
-// Start Battlesnake Server
-func RunServer() {
-	port := os.Getenv("PORT")
-	if len(port) == 0 {
-		port = "8080"
-	}
-
-	http.HandleFunc("/claudia/", withServerID(HandleIndex))
-	http.HandleFunc("/claudia/start", withServerID(HandleStart))
-	http.HandleFunc("/claudia/move", withServerID(HandleMove))
-	http.HandleFunc("/claudia/end", withServerID(HandleEnd))
-
-	log.Printf("Running Battlesnake at http://0.0.0.0:%s...\n", port)
-	log.Fatal(http.ListenAndServe(":"+port, nil))
 }
